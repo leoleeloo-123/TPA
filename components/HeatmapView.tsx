@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { CityNetwork, Language } from '../types';
-import { MapPin, Download, AlertCircle, RefreshCw } from 'lucide-react';
+import { MapPin, Download, AlertCircle, RefreshCw, Layers } from 'lucide-react';
+import { CITY_COORDINATES } from '../constants';
 
 interface HeatmapViewProps {
   networks: CityNetwork[];
@@ -9,39 +10,11 @@ interface HeatmapViewProps {
   metric: string;
 }
 
-const GEO_COORDS: Record<string, [number, number]> = {
-  '北京': [116.4074, 39.9042],
-  '上海': [121.4737, 31.2304],
-  '广州': [113.2644, 23.1291],
-  '深圳': [114.0579, 22.5431],
-  '成都': [104.0665, 30.5723],
-  '杭州': [120.1536, 30.2875],
-  '武汉': [114.3054, 30.5931],
-  '西安': [108.9402, 34.3416],
-  '南京': [118.7966, 32.0594],
-  '重庆': [106.5516, 29.5630],
-  '天津': [117.1902, 39.1256],
-  '沈阳': [123.4294, 41.7968],
-  '哈尔滨': [126.6425, 45.7569],
-  '青岛': [120.3826, 36.0671],
-  '大连': [121.6147, 38.9140],
-  '苏州': [120.6196, 31.2994],
-  '厦门': [118.0894, 24.4798],
-  '长沙': [112.9388, 28.2280],
-  '昆明': [102.7123, 25.0406],
-  '乌鲁木齐': [87.6177, 43.7928],
-  '拉萨': [91.1322, 29.6604],
-  '呼和浩特': [111.6708, 40.8183],
-  '福州': [119.2965, 26.0745],
-  '南宁': [108.3200, 22.8240],
-  '海口': [110.3312, 20.0319],
-};
-
-// Priority list of GeoJSON sources
+// Optimized list of GeoJSON sources including npm mirrors
 const MAP_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/echarts-china-geo-json@1.0.2/china.json',
   'https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json',
-  'https://cdn.jsdelivr.net/gh/apache/echarts-website@asf-site/examples/data/asset/geo/china.json',
-  'https://raw.githubusercontent.com/apache/echarts/master/test/data/map/json/china.json'
+  'https://fastly.jsdelivr.net/gh/apache/echarts-website@asf-site/examples/data/asset/geo/china.json'
 ];
 
 const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }) => {
@@ -51,6 +24,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
   const [isMapRegistered, setIsMapRegistered] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [useFallback, setUseFallback] = useState(false);
 
   const maxVal = useMemo(() => {
     if (!networks || networks.length === 0) return 1;
@@ -61,8 +35,8 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
   const loadMapData = async () => {
     setLoading(true);
     setMapError(null);
+    setUseFallback(false);
     
-    // Check if already registered
     if (echarts.getMap('china')) {
       setIsMapRegistered(true);
       setLoading(false);
@@ -72,22 +46,22 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
     let loaded = false;
     for (const source of MAP_SOURCES) {
       try {
-        const response = await fetch(source, { mode: 'cors' });
-        if (!response.ok) throw new Error(`Source ${source} failed`);
+        const response = await fetch(source);
+        if (!response.ok) throw new Error(`Source failed`);
         const geoJson = await response.json();
         echarts.registerMap('china', geoJson);
         loaded = true;
         break;
       } catch (err) {
-        console.warn(`Attempt with ${source} failed, trying next...`);
+        console.warn(`Map source ${source} failed, retrying...`);
       }
     }
 
     if (loaded) {
       setIsMapRegistered(true);
-      setMapError(null);
     } else {
-      setMapError('All GIS data sources are unreachable. Check your network or VPN.');
+      setMapError('GIS Server Unreachable');
+      setUseFallback(true); // Activate Schematic Fallback Mode
     }
     setLoading(false);
   };
@@ -103,7 +77,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
     window.addEventListener('resize', handleResize);
 
     myChart.on('click', (params: any) => {
-      if (params.componentType === 'series' && (params.seriesType === 'scatter' || params.seriesType === 'effectScatter')) {
+      if (params.componentType === 'series') {
         const cityData = networks.find(n => n.cityName === params.name);
         if (cityData) setSelectedCity(cityData);
       }
@@ -116,114 +90,107 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
   }, []);
 
   useEffect(() => {
-    if (chartInstance && isMapRegistered) {
-      updateChart(chartInstance);
+    if (chartInstance) {
+      if (useFallback) {
+        renderFallbackChart(chartInstance);
+      } else if (isMapRegistered) {
+        renderGisChart(chartInstance);
+      }
     }
-  }, [networks, metric, lang, chartInstance, isMapRegistered, maxVal]);
+  }, [networks, metric, lang, chartInstance, isMapRegistered, useFallback, maxVal]);
 
-  const updateChart = (instance: echarts.ECharts) => {
+  // Standard GIS Map Rendering
+  const renderGisChart = (instance: echarts.ECharts) => {
     const validNetworks = networks || [];
     const scatterData = validNetworks.map(n => {
-      const coords = GEO_COORDS[n.cityName];
+      const coords = (CITY_COORDINATES[n.cityName] ? [
+        100 + (CITY_COORDINATES[n.cityName].x / 100) * 20, 
+        20 + (CITY_COORDINATES[n.cityName].y / 100) * 30 
+      ] : [0,0]); 
+      // Note: Real GIS uses Lon/Lat, we use our mapping as reliable fallback inside the series
+      // But for Geo Map, we need specific Lon/Lat
+      const lonLatMap: Record<string, [number, number]> = {
+        '北京': [116.40, 39.90], '上海': [121.47, 31.23], '广州': [113.26, 23.12],
+        '深圳': [114.05, 22.54], '成都': [104.06, 30.57], '杭州': [120.15, 30.28],
+        '武汉': [114.30, 30.59], '西安': [108.94, 34.34], '南京': [118.79, 32.05],
+        '重庆': [106.55, 29.56], '天津': [117.19, 39.12], '苏州': [120.61, 31.29],
+        '厦门': [118.08, 24.47], '昆明': [102.71, 25.04], '乌鲁木齐': [87.61, 43.79]
+      };
+      
       return {
         name: n.cityName,
-        value: coords ? [...coords, Number((n as any)[metric]) || 0] : undefined
+        value: lonLatMap[n.cityName] ? [...lonLatMap[n.cityName], Number((n as any)[metric]) || 0] : undefined
       };
     }).filter(d => d.value !== undefined);
 
-    const option: any = {
+    const option = {
       backgroundColor: 'transparent',
-      tooltip: {
-        trigger: 'item',
-        formatter: (params: any) => `${params.name}: ${params.value[2]}`
-      },
       visualMap: {
-        min: 0,
-        max: maxVal,
-        left: 'left',
-        top: 'bottom',
-        text: [lang === Language.ZH ? '高' : 'High', lang === Language.ZH ? '低' : 'Low'],
-        calculable: true,
-        inRange: {
-          color: ['#f0f9ff', '#60a5fa', '#1e3a8a']
-        },
-        padding: [20, 20, 40, 40],
-        textStyle: { fontWeight: '800', fontSize: 10, color: '#64748b' }
+        min: 0, max: maxVal, left: 30, bottom: 30, calculable: true,
+        inRange: { color: ['#eff6ff', '#3b82f6', '#1e3a8a'] },
+        textStyle: { fontWeight: '800', color: '#64748b' }
       },
       geo: {
-        map: 'china',
-        roam: false,
-        zoom: 1.15,
-        emphasis: {
-          label: { show: false },
-          itemStyle: { areaColor: '#f1f5f9' }
-        },
-        itemStyle: {
-          areaColor: '#f8fafc',
-          borderColor: '#cbd5e1',
-          borderWidth: 1.2
-        }
+        map: 'china', roam: false, zoom: 1.15,
+        itemStyle: { areaColor: '#f8fafc', borderColor: '#cbd5e1', borderWidth: 1.2 },
+        emphasis: { itemStyle: { areaColor: '#f1f5f9' }, label: { show: false } }
       },
       series: [
         {
-          name: 'City Dots',
-          type: 'scatter',
-          coordinateSystem: 'geo',
-          data: scatterData,
-          symbolSize: (val: any) => 10 + (val[2] / maxVal) * 20,
-          encode: { value: 2 },
-          label: { show: false },
-          emphasis: { label: { show: true, position: 'right', formatter: '{b}' } },
-          itemStyle: {
-            color: '#3b82f6',
-            shadowBlur: 10,
-            shadowColor: 'rgba(59, 130, 246, 0.3)'
-          }
+          type: 'scatter', coordinateSystem: 'geo', data: scatterData,
+          symbolSize: (val: any) => 12 + (val[2] / maxVal) * 25,
+          itemStyle: { color: '#3b82f6', shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.1)' }
         },
         {
-          name: 'Core Hubs',
-          type: 'effectScatter',
-          coordinateSystem: 'geo',
-          data: scatterData.filter(d => d.value![2] / maxVal > 0.65),
-          symbolSize: (val: any) => 15 + (val[2] / maxVal) * 25,
-          showEffectOn: 'render',
-          rippleEffect: { brushType: 'stroke', scale: 3 },
-          label: {
-            formatter: '{b}',
-            position: 'right',
-            show: true,
-            fontWeight: '900',
-            fontSize: 12,
-            color: '#0f172a',
-            backgroundColor: 'rgba(255,255,255,0.9)',
-            padding: [4, 8],
-            borderRadius: 6,
-            shadowBlur: 10,
-            shadowColor: 'rgba(0,0,0,0.1)'
-          },
-          itemStyle: {
-            color: '#1d4ed8',
-            shadowBlur: 20,
-            shadowColor: 'rgba(29, 78, 216, 0.4)'
-          },
-          zlevel: 1
+          type: 'effectScatter', coordinateSystem: 'geo', 
+          data: scatterData.filter(d => d.value![2] / maxVal > 0.6),
+          symbolSize: (val: any) => 15 + (val[2] / maxVal) * 30,
+          showEffectOn: 'render', rippleEffect: { brushType: 'stroke', scale: 3 },
+          label: { show: true, position: 'right', formatter: '{b}', fontWeight: '900', color: '#0f172a' },
+          itemStyle: { color: '#1d4ed8' }, zlevel: 1
         }
       ]
     };
+    instance.setOption(option, true);
+  };
 
+  // Schematic Fallback Rendering (Scatter Plot without Geo Layer)
+  const renderFallbackChart = (instance: echarts.ECharts) => {
+    const validNetworks = networks || [];
+    const data = validNetworks.map(n => {
+      const coord = CITY_COORDINATES[n.cityName] || { x: Math.random() * 100, y: Math.random() * 100 };
+      return {
+        name: n.cityName,
+        value: [coord.x, 100 - coord.y, Number((n as any)[metric]) || 0]
+      };
+    });
+
+    const option = {
+      backgroundColor: 'transparent',
+      grid: { top: '15%', bottom: '15%', left: '10%', right: '10%' },
+      xAxis: { show: false, min: 0, max: 100 },
+      yaxis: { show: false, min: 0, max: 100 },
+      visualMap: {
+        min: 0, max: maxVal, left: 30, bottom: 30,
+        inRange: { color: ['#eff6ff', '#3b82f6', '#1e3a8a'] }
+      },
+      series: [{
+        type: 'scatter',
+        data: data,
+        symbolSize: (val: any) => 15 + (val[2] / maxVal) * 40,
+        label: { show: true, position: 'top', formatter: '{b}', fontWeight: '900', color: '#334155' },
+        itemStyle: { shadowBlur: 20, shadowColor: 'rgba(59, 130, 246, 0.4)' }
+      }]
+    };
     instance.setOption(option, true);
   };
 
   const handleExport = () => {
     if (!chartInstance) return;
-    const url = chartInstance.getDataURL({
-      type: 'png',
-      pixelRatio: 4,
-      backgroundColor: '#ffffff'
-    });
+    const url = chartInstance.getDataURL({ type: 'png', pixelRatio: 4, backgroundColor: '#ffffff' });
     const link = document.createElement('a');
     link.href = url;
-    link.download = `TPA_Network_Export_${new Date().getTime()}.png`;
+    link.download = `TPA_Heatmap_Export_${new Date().getTime()}.png`;
     link.click();
   };
 
@@ -235,19 +202,25 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
             {lang === Language.ZH ? '医疗服务网络热力分布' : 'Medical Network Heatmap'}
           </h2>
           <p className="text-slate-500 text-sm mt-3 font-medium">
-            {lang === Language.ZH ? '基于 Apache ECharts 官方地理图层构建' : 'Engineered with official Apache ECharts geospatial layers'}
+            {useFallback 
+              ? (lang === Language.ZH ? '示意图模式：GIS 连接受限，已切换至结构化坐标投影' : 'Schematic Mode: GIS restricted, switched to coordinate projection')
+              : (lang === Language.ZH ? '权威地理图层叠加 Excel 实时业务数据' : 'Official GIS layers overlaid with real-time Excel data')}
           </p>
         </div>
         <div className="flex gap-4">
-           {mapError && (
-              <button 
-                onClick={loadMapData}
-                className="px-6 py-3.5 bg-slate-100 text-slate-600 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-200 transition flex items-center gap-2"
-              >
-                <RefreshCw className="w-4 h-4" />
-                {lang === Language.ZH ? '重新加载地图' : 'Retry GIS'}
-              </button>
+           {useFallback && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 border border-amber-100 rounded-xl text-[10px] font-black uppercase tracking-widest">
+                <Layers className="w-3.5 h-3.5" />
+                Fallback Active
+              </div>
            )}
+           <button 
+            onClick={loadMapData}
+            className="p-3.5 bg-slate-100 text-slate-500 rounded-2xl hover:bg-slate-200 transition active:scale-90"
+            title="Refresh GIS"
+          >
+            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
            <button 
             onClick={handleExport}
             className="px-8 py-3.5 bg-slate-950 text-white rounded-2xl text-xs font-black uppercase tracking-[0.2em] hover:bg-blue-700 transition shadow-2xl flex items-center gap-3 active:scale-95"
@@ -260,50 +233,35 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
 
       <div className="flex gap-10 flex-1 overflow-hidden min-h-[750px]">
         {/* MAP CONTAINER */}
-        <div className="relative flex-1 bg-white border border-slate-200 rounded-[3rem] shadow-sm flex items-center justify-center p-12 overflow-hidden group">
+        <div className={`relative flex-1 bg-white border rounded-[3rem] shadow-sm flex items-center justify-center p-12 overflow-hidden transition-all duration-1000 ${useFallback ? 'border-amber-200 bg-slate-50/30' : 'border-slate-200'}`}>
           {loading && (
             <div className="absolute inset-0 z-20 bg-white/60 backdrop-blur-sm flex flex-col items-center justify-center gap-6">
               <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin shadow-2xl" />
-              <div className="text-center">
-                 <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-800">{lang === Language.ZH ? '同步地理信息...' : 'Syncing GIS Layers'}</p>
-                 <p className="text-[10px] text-slate-400 font-bold uppercase mt-2 tracking-widest">WGS-84 Projection System</p>
-              </div>
+              <p className="text-sm font-black uppercase tracking-[0.3em] text-slate-800 animate-pulse">{lang === Language.ZH ? '正在同步地理图层' : 'Syncing Geo Layers'}</p>
             </div>
           )}
           
-          {mapError && (
-            <div className="absolute inset-0 z-30 bg-white flex flex-col items-center justify-center p-12 text-center">
-              <div className="bg-red-50 p-8 rounded-[2rem] border border-red-100 flex flex-col items-center max-w-sm">
-                <AlertCircle className="w-16 h-16 text-red-500 mb-6 animate-pulse" />
-                <h4 className="text-xl font-black text-slate-900 mb-3">{lang === Language.ZH ? '地图数据不可用' : 'GIS Data Unavailable'}</h4>
-                <p className="text-slate-500 text-sm font-medium leading-relaxed mb-8">
-                  {lang === Language.ZH ? '无法从公共 CDN 节点拉取行政地图包。请检查您的网络连接或尝试点击重新加载。' : 'Failed to fetch administrative map from public CDNs. Please check your connection or retry.'}
-                </p>
-                <button 
-                  onClick={loadMapData}
-                  className="w-full py-4 bg-red-600 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-red-700 transition"
-                >
-                  {lang === Language.ZH ? '手动重试同步' : 'Retry Sync'}
-                </button>
+          <div ref={chartRef} className="w-full h-full" />
+          
+          {!loading && !useFallback && (
+            <div className="absolute top-10 left-10 pointer-events-none">
+              <div className="bg-white/90 backdrop-blur px-5 py-3 rounded-2xl border border-slate-200 shadow-xl flex items-center gap-4">
+                <div className="w-2.5 h-2.5 bg-blue-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(37,99,235,0.5)]" />
+                <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">GIS Level: Administrative</span>
               </div>
             </div>
           )}
 
-          <div ref={chartRef} className={`w-full h-full transition-opacity duration-1000 ${loading || mapError ? 'opacity-0' : 'opacity-100'}`} />
-          
-          {isMapRegistered && !loading && (
-            <div className="absolute top-10 left-10 pointer-events-none">
-              <div className="bg-slate-900/5 backdrop-blur px-5 py-3 rounded-2xl border border-slate-200/50 flex items-center gap-4 group-hover:bg-white/90 group-hover:shadow-2xl transition-all duration-500">
-                <div className="w-2.5 h-2.5 bg-blue-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(37,99,235,0.5)]" />
-                <span className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">Geo-Layer: China Master Projection</span>
-              </div>
+          {useFallback && (
+            <div className="absolute inset-0 pointer-events-none opacity-[0.03] flex items-center justify-center">
+               <Layers className="w-[600px] h-[600px] text-slate-950" />
             </div>
           )}
         </div>
 
         {/* SIDEBAR */}
         <div className="w-[440px] flex flex-col gap-6 shrink-0">
-          <div className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-sm flex-1 flex flex-col relative overflow-hidden group/sidebar">
+          <div className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-sm flex-1 flex flex-col relative overflow-hidden">
             {selectedCity ? (
               <div className="animate-in fade-in zoom-in-95 duration-500 flex flex-col h-full">
                 <div className="flex justify-between items-start mb-12 border-b border-slate-100 pb-10">
@@ -329,39 +287,35 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
                        <p className="text-9xl font-black text-blue-700 tabular-nums leading-none tracking-tighter">{selectedCity.directPayCount}</p>
                        <span className="text-sm font-black text-blue-400 uppercase tracking-widest">UNITS</span>
                     </div>
-                    <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-blue-600/10 rounded-full blur-3xl" />
                   </div>
 
                   <div className="grid grid-cols-2 gap-6">
-                    <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100 group hover:bg-white hover:shadow-2xl transition-all duration-500">
+                    <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100 group hover:bg-white transition-all duration-500">
                       <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-4">Public Prem.</p>
                       <p className="text-4xl font-black text-slate-900 tabular-nums">{selectedCity.publicPremiumCount}</p>
                     </div>
-                    <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100 group hover:bg-white hover:shadow-2xl transition-all duration-500">
+                    <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100 group hover:bg-white transition-all duration-500">
                       <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-4">Private</p>
                       <p className="text-4xl font-black text-slate-900 tabular-nums">{selectedCity.privateCount}</p>
                     </div>
                   </div>
 
-                  <div className={`p-8 rounded-[2rem] border flex items-center justify-between transition-all duration-700 ${selectedCity.hasRepresentative === '是' ? 'bg-emerald-50 border-emerald-100 shadow-[0_20px_40px_rgba(16,185,129,0.1)]' : 'bg-slate-50 border-slate-100'}`}>
+                  <div className={`p-8 rounded-[2rem] border flex items-center justify-between transition-all duration-700 ${selectedCity.hasRepresentative === '是' ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100'}`}>
                     <div className="flex-1">
                       <p className={`font-black text-xs uppercase tracking-widest mb-2 ${selectedCity.hasRepresentative === '是' ? 'text-emerald-700' : 'text-slate-500'}`}>{lang === Language.ZH ? '驻院代表覆盖' : 'On-site Rep'}</p>
-                      <p className="text-[11px] text-slate-400 font-bold leading-relaxed">{lang === Language.ZH ? '支持现场口译及直付结算协助' : 'Providing direct claim processing support'}</p>
-                    </div>
-                    <div className={`w-16 h-16 rounded-[1.25rem] flex items-center justify-center font-black text-sm shadow-xl transition-transform duration-700 group-hover/sidebar:rotate-6 ${selectedCity.hasRepresentative === '是' ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-400'}`}>
-                      {selectedCity.hasRepresentative === '是' ? 'YES' : 'NO'}
+                      <p className="text-[11px] text-slate-400 font-bold leading-relaxed">{lang === Language.ZH ? '支持现场口译及直付结算协助' : 'Direct claim support active'}</p>
                     </div>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center p-6 animate-pulse">
+              <div className="h-full flex flex-col items-center justify-center text-center p-6">
                 <div className="w-32 h-32 bg-slate-50 rounded-full flex items-center justify-center mb-12 shadow-inner border border-slate-100">
                    <MapPin className="w-14 h-14 text-slate-200" />
                 </div>
-                <h4 className="text-3xl font-black text-slate-300 mb-4 tracking-tighter uppercase">{lang === Language.ZH ? '待选观测节点' : 'Awaiting Selection'}</h4>
+                <h4 className="text-3xl font-black text-slate-300 mb-4 tracking-tighter uppercase">{lang === Language.ZH ? '待激活节点' : 'Awaiting Data'}</h4>
                 <p className="text-slate-300 text-xs font-black max-w-[280px] leading-relaxed uppercase tracking-[0.3em]">
-                  {lang === Language.ZH ? '交互式地图节点激活后可见详细覆盖指标' : 'Interactive Map Nodes Activation Required'}
+                  {lang === Language.ZH ? '点击地图热力点以激活数据透视' : 'Interact with map nodes to reveal stats'}
                 </p>
               </div>
             )}
@@ -369,15 +323,15 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
           
           <div className="bg-slate-950 rounded-[3rem] p-12 text-white relative overflow-hidden shadow-2xl">
              <div className="relative z-10">
-                <h4 className="text-blue-500 text-[10px] font-black uppercase tracking-[0.5em] mb-10">{lang === Language.ZH ? '实时网络覆盖指数' : 'Global Coverage Index'}</h4>
+                <h4 className="text-blue-500 text-[10px] font-black uppercase tracking-[0.5em] mb-10">{lang === Language.ZH ? '全国指数统计' : 'National Index'}</h4>
                 <div className="space-y-10">
                   <div className="flex justify-between items-end border-b border-white/5 pb-8 group">
-                    <span className="text-slate-500 text-xs font-black uppercase tracking-widest">{lang === Language.ZH ? '深度覆盖城市' : 'Hub Cities'}:</span>
-                    <span className="text-6xl font-black tabular-nums tracking-tighter leading-none group-hover:text-blue-500 transition-colors">{networks.length}</span>
+                    <span className="text-slate-500 text-xs font-black uppercase tracking-widest">{lang === Language.ZH ? '覆盖城市' : 'Cities'}:</span>
+                    <span className="text-6xl font-black tabular-nums tracking-tighter leading-none">{networks.length}</span>
                   </div>
-                  <div className="flex justify-between items-end pb-2 group">
-                    <span className="text-slate-500 text-xs font-black uppercase tracking-widest">{lang === Language.ZH ? '直付网络规模' : 'Network Cap'}:</span>
-                    <span className="text-7xl font-black tabular-nums tracking-tighter leading-none text-blue-600 group-hover:text-white transition-all">{networks.reduce((acc, curr) => acc + (Number(curr.directPayCount) || 0), 0)}</span>
+                  <div className="flex justify-between items-end group">
+                    <span className="text-slate-500 text-xs font-black uppercase tracking-widest">{lang === Language.ZH ? '机构总数' : 'Providers'}:</span>
+                    <span className="text-7xl font-black tabular-nums tracking-tighter leading-none text-blue-600">{networks.reduce((acc, curr) => acc + (Number(curr.directPayCount) || 0), 0)}</span>
                   </div>
                 </div>
              </div>
