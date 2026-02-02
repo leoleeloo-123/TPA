@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { CityNetwork, Language } from '../types';
-import { MapPin, Info, Download } from 'lucide-react';
+import { MapPin, Download, AlertCircle } from 'lucide-react';
 
 interface HeatmapViewProps {
   networks: CityNetwork[];
@@ -10,7 +10,6 @@ interface HeatmapViewProps {
   metric: string;
 }
 
-// Coordinates for standard cities if names don't match exactly or for scatter points
 const GEO_COORDS: Record<string, [number, number]> = {
   '北京': [116.4074, 39.9042],
   '上海': [121.4737, 31.2304],
@@ -44,6 +43,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
   const [selectedCity, setSelectedCity] = useState<CityNetwork | null>(null);
   const [chartInstance, setChartInstance] = useState<echarts.ECharts | null>(null);
   const [isMapRegistered, setIsMapRegistered] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
 
   const maxVal = useMemo(() => {
     if (!networks || networks.length === 0) return 1;
@@ -51,22 +51,30 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
     return Math.max(...vals, 1);
   }, [networks, metric]);
 
+  // Map registration and Chart initialization - ONLY ONCE
   useEffect(() => {
     if (!chartRef.current) return;
 
     const myChart = echarts.init(chartRef.current);
     setChartInstance(myChart);
 
-    // Fetch authoritative GeoJSON for China map
-    fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json')
-      .then(res => res.json())
-      .then(geoJson => {
-        echarts.registerMap('china', geoJson);
+    const loadMap = async () => {
+      try {
+        // Checking if already registered to avoid double registration
+        if (!echarts.getMap('china')) {
+          const response = await fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json');
+          if (!response.ok) throw new Error('Network response was not ok');
+          const geoJson = await response.json();
+          echarts.registerMap('china', geoJson);
+        }
         setIsMapRegistered(true);
-      })
-      .catch(err => {
+      } catch (err: any) {
         console.error('Failed to load map data', err);
-      });
+        setMapError(err.message || 'Failed to load GIS data');
+      }
+    };
+
+    loadMap();
 
     const handleResize = () => myChart.resize();
     window.addEventListener('resize', handleResize);
@@ -82,9 +90,9 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
       window.removeEventListener('resize', handleResize);
       myChart.dispose();
     };
-  }, [networks]);
+  }, []);
 
-  // Update chart only when map is registered and other props change
+  // Separate effect for updating data to avoid re-initializing map fetch
   useEffect(() => {
     if (chartInstance && isMapRegistered) {
       updateChart(chartInstance);
@@ -196,7 +204,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
     if (!chartInstance) return;
     const url = chartInstance.getDataURL({
       type: 'png',
-      pixelRatio: 4, // Ultra high resolution for PPT
+      pixelRatio: 4,
       backgroundColor: '#ffffff'
     });
     const link = document.createElement('a');
@@ -226,14 +234,22 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
       </div>
 
       <div className="flex gap-10 flex-1 overflow-hidden min-h-[750px]">
-        {/* Massive Map Area */}
         <div className="relative flex-1 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm flex items-center justify-center p-8">
-          {!isMapRegistered && (
+          {!isMapRegistered && !mapError && (
             <div className="text-slate-400 flex flex-col items-center gap-4">
               <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
               <span className="text-sm font-black uppercase tracking-widest">{lang === Language.ZH ? '加载地理信息系统...' : 'Initializing GIS...'}</span>
             </div>
           )}
+          
+          {mapError && (
+            <div className="text-red-400 flex flex-col items-center gap-4">
+              <AlertCircle className="w-12 h-12" />
+              <span className="text-sm font-black uppercase tracking-widest">{lang === Language.ZH ? '地图加载失败' : 'GIS Load Failed'}</span>
+              <p className="text-xs font-medium text-slate-400">{mapError}</p>
+            </div>
+          )}
+
           <div ref={chartRef} className={`w-full h-full ${!isMapRegistered ? 'invisible' : 'visible'}`} />
           
           {isMapRegistered && (
@@ -250,7 +266,6 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
           </div>
         </div>
 
-        {/* Info Sidebar (Fixed width, massive depth) */}
         <div className="w-[420px] flex flex-col gap-6 shrink-0">
           <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm flex-1 flex flex-col relative overflow-hidden">
             {selectedCity ? (
