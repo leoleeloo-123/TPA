@@ -1,0 +1,5 @@
+{
+  "name": "TPA",
+  "description": "A high-end internal tool for TPA (Third Party Administrator) services. It visualizes medical network coverage, service modules, and SLA commitments using Excel as the single source of truth, specifically designed for creating high-quality PPT assets.",
+  "requestFramePermissions": []
+}
