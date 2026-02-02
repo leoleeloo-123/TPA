@@ -82,7 +82,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
       window.removeEventListener('resize', handleResize);
       myChart.dispose();
     };
-  }, []);
+  }, [networks]);
 
   // Update chart only when map is registered and other props change
   useEffect(() => {
@@ -101,7 +101,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
       };
     }).filter(d => d.value !== undefined);
 
-    const option: echarts.EChartsOption = {
+    const option: any = {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'item',
@@ -142,13 +142,17 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
           type: 'scatter',
           coordinateSystem: 'geo',
           data: scatterData,
-          symbolSize: (val) => 12 + (val[2] / maxVal) * 22,
+          symbolSize: (val: any) => 12 + (val[2] / maxVal) * 22,
           encode: { value: 2 },
           label: {
             formatter: '{b}',
             position: 'right',
-            show: false,
-            emphasis: { show: true }
+            show: false
+          },
+          emphasis: {
+            label: {
+              show: true
+            }
           },
           itemStyle: {
             color: '#3b82f6',
@@ -161,7 +165,7 @@ const HeatmapView: React.FC<HeatmapViewProps> = ({ networks = [], lang, metric }
           type: 'effectScatter',
           coordinateSystem: 'geo',
           data: scatterData.filter(d => d.value![2] / maxVal > 0.6),
-          symbolSize: (val) => 14 + (val[2] / maxVal) * 22,
+          symbolSize: (val: any) => 14 + (val[2] / maxVal) * 22,
           showEffectOn: 'render',
           rippleEffect: { brushType: 'stroke', scale: 3 },
           label: {
